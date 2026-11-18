@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Auto-solver for daily LeetCode problems using OpenAI GPT-5-mini.
+Auto-solver for daily LeetCode problems using NVIDIA's OpenAI-compatible API.
 This script fetches the daily problem (or a specific problem by ID), uses AI to solve it, and creates a solution file.
 
 Usage:
@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import json
 import requests
@@ -17,6 +18,9 @@ import time
 from datetime import datetime
 from openai import OpenAI
 
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+FENCE = "`" * 3  # triple backticks, built this way so the prompt below stays readable
 
 # Global cache for problem ID to titleSlug mapping
 _problem_cache = None
@@ -37,9 +41,6 @@ def _build_problem_cache():
     leetcode_api_url = "https://leetcode.com/graphql"
     _problem_cache = {}
 
-    # Fetch all problems using pagination
-    # We'll fetch in batches, but use a larger limit and no category filter
-    # to ensure we get ALL problems
     query = {
         "query": """query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
             problemsetQuestionList: questionList(
@@ -108,7 +109,7 @@ def _build_problem_cache():
                 skip += batch_size
                 time.sleep(0.5)  # Small delay to avoid rate limiting
             else:
-                print(f"    Unexpected response structure during cache build")
+                print("    Unexpected response structure during cache build")
                 break
 
         except Exception as e:
@@ -129,14 +130,11 @@ def fetch_problem_by_id(problem_id):
     Returns:
         dict: Problem details or None if not found
     """
-    # Build or retrieve the problem cache
     cache = _build_problem_cache()
-
     problem_id_str = str(problem_id)
 
     if problem_id_str in cache:
         cached_info = cache[problem_id_str]
-        # Fetch full details including content
         return fetch_problem_details(cached_info["titleSlug"])
 
     print(
@@ -221,7 +219,7 @@ def fetch_daily_problem():
     }
 
     try:
-        response = requests.post(leetcode_api_url, json=daily_challenge_query)
+        response = requests.post(leetcode_api_url, json=daily_challenge_query, timeout=30)
         response.raise_for_status()
         data = response.json()
 
@@ -250,24 +248,18 @@ def fetch_daily_problem():
 
 def generate_solution_with_ai(problem_info, api_key):
     """
-    Use OpenAI GPT-5-mini to generate a solution for the problem.
+    Use NVIDIA's OpenAI-compatible API to generate a solution for the problem.
 
     Args:
         problem_info (dict): Problem details from LeetCode
-        api_key (str): OpenAI API key
+        api_key (str): NVIDIA API key
 
     Returns:
         str: Generated solution in markdown format
     """
     try:
-        import httpx
+        client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=300)
 
-        # Create an httpx client that doesn't verify SSL certificates
-        # This is needed when running behind a proxy with self-signed certificates
-        http_client = httpx.Client(verify=False)
-        client = OpenAI(api_key=api_key, http_client=http_client)
-
-        # Create a detailed prompt for the AI
         prompt = f"""You are solving a LeetCode problem. Generate a complete solution following this exact format:
 
 # [Problem {problem_info["problem_id"]}: {problem_info["title"]}]({problem_info["link"]})
@@ -279,9 +271,9 @@ def generate_solution_with_ai(problem_info, api_key):
 [Discuss any refinements to your approach, edge cases to consider, alternative solutions, time/space complexity considerations]
 
 ## Attempted solution(s)
-```python
+{FENCE}python
 [Provide a complete, working Python solution]
-```
+{FENCE}
 - [Add brief notes about the solution approach, complexity analysis, and any important implementation details]
 
 Here is the problem:
@@ -296,7 +288,7 @@ Here is the problem:
 Please provide a thoughtful, well-explained solution that demonstrates clear problem-solving skills. The solution should be efficient and include proper complexity analysis."""
 
         response = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=NVIDIA_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -304,10 +296,14 @@ Please provide a thoughtful, well-explained solution that demonstrates clear pro
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_completion_tokens=8000,
+            temperature=0.6,
+            max_tokens=8000,
         )
 
-        return response.choices[0].message.content
+        text = response.choices[0].message.content or ""
+        # Remove any visible reasoning block from the model output
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return text or None
 
     except Exception as e:
         print(f"Error generating solution with AI: {e}")
@@ -329,6 +325,7 @@ def save_solution(problem_id, solution_content):
         problem_dir = f"problems/{problem_id}"
         os.makedirs(problem_dir, exist_ok=True)
 
+        # File name kept as gpt5-mini.md so the workflow's file_pattern still matches
         solution_file = f"{problem_dir}/gpt5-mini.md"
 
         with open(solution_file, "w", encoding="utf-8") as f:
@@ -342,19 +339,25 @@ def save_solution(problem_id, solution_content):
         return None
 
 
+def get_api_key():
+    """Read the NVIDIA API key from the environment or exit with a clear message."""
+    api_key = os.environ.get("NVIDIA_API_KEY")
+    if not api_key:
+        print("Error: NVIDIA_API_KEY environment variable not set")
+        sys.exit(1)
+    return api_key
+
+
 def main():
     """Main execution function."""
     # Check for bulk mode
     if len(sys.argv) >= 3 and sys.argv[1] == "--bulk":
-        # Bulk mode: solve multiple problems from file
         bulk_solve(sys.argv[2])
         return
 
     # Check for specific problem ID
     if len(sys.argv) >= 2 and sys.argv[1].isdigit():
-        # Single problem mode by ID
-        problem_id = sys.argv[1]
-        solve_problem_by_id(problem_id)
+        solve_problem_by_id(sys.argv[1])
         return
 
     # Default: daily problem mode
@@ -367,13 +370,8 @@ def solve_daily_problem():
     print("LeetCode Auto-Solver - Daily Problem Mode")
     print("=" * 60)
 
-    # Get OpenAI API key from environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable not set")
-        sys.exit(1)
+    api_key = get_api_key()
 
-    # Fetch today's problem
     print("\n1. Fetching daily LeetCode problem...")
     problem_info = fetch_daily_problem()
     if not problem_info:
@@ -384,7 +382,6 @@ def solve_daily_problem():
     print(f"   Title: {problem_info['title']}")
     print(f"   Difficulty: {problem_info['difficulty']}")
 
-    # Generate and save solution
     generate_and_save_solution(problem_info, api_key)
 
 
@@ -394,13 +391,8 @@ def solve_problem_by_id(problem_id):
     print(f"LeetCode Auto-Solver - Problem #{problem_id}")
     print("=" * 60)
 
-    # Get OpenAI API key from environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable not set")
-        sys.exit(1)
+    api_key = get_api_key()
 
-    # Fetch problem
     print(f"\n1. Fetching problem {problem_id}...")
     problem_info = fetch_problem_by_id(problem_id)
     if not problem_info:
@@ -410,7 +402,6 @@ def solve_problem_by_id(problem_id):
     print(f"   Title: {problem_info['title']}")
     print(f"   Difficulty: {problem_info['difficulty']}")
 
-    # Generate and save solution
     generate_and_save_solution(problem_info, api_key)
 
 
@@ -420,13 +411,8 @@ def bulk_solve(problems_file):
     print("LeetCode Auto-Solver - Bulk Mode")
     print("=" * 60)
 
-    # Get OpenAI API key from environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable not set")
-        sys.exit(1)
+    api_key = get_api_key()
 
-    # Read problem IDs from file
     print(f"\nReading problems from: {problems_file}")
     try:
         with open(problems_file, "r") as f:
@@ -437,7 +423,6 @@ def bulk_solve(problems_file):
 
     print(f"Found {len(problem_ids)} problems to solve\n")
 
-    # Process each problem
     successful = 0
     failed = []
 
@@ -445,8 +430,7 @@ def bulk_solve(problems_file):
         print(f"\n[{i}/{len(problem_ids)}] Processing problem {problem_id}...")
 
         try:
-            # Fetch problem
-            print(f"  → Fetching problem details...")
+            print("  → Fetching problem details...")
             problem_info = fetch_problem_by_id(problem_id)
 
             if not problem_info:
@@ -457,17 +441,15 @@ def bulk_solve(problems_file):
             print(f"  → Title: {problem_info['title']}")
             print(f"  → Difficulty: {problem_info['difficulty']}")
 
-            # Generate solution
-            print(f"  → Generating solution with GPT-5-mini...")
+            print("  → Generating solution with NVIDIA model...")
             solution = generate_solution_with_ai(problem_info, api_key)
 
             if not solution:
-                print(f"  ✗ Failed to generate solution")
+                print("  ✗ Failed to generate solution")
                 failed.append(problem_id)
                 continue
 
-            # Save solution
-            print(f"  → Saving solution...")
+            print("  → Saving solution...")
             saved_path = save_solution(problem_info["problem_id"], solution)
 
             if saved_path:
@@ -476,7 +458,6 @@ def bulk_solve(problems_file):
             else:
                 failed.append(problem_id)
 
-            # Rate limiting
             if i < len(problem_ids):
                 time.sleep(2)  # 2 seconds between requests
 
@@ -485,7 +466,6 @@ def bulk_solve(problems_file):
             failed.append(problem_id)
             continue
 
-    # Summary
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
@@ -499,8 +479,7 @@ def bulk_solve(problems_file):
 
 def generate_and_save_solution(problem_info, api_key):
     """Generate and save a solution for a problem."""
-    # Generate solution
-    print("\n2. Generating solution with GPT-5-mini...")
+    print("\n2. Generating solution with NVIDIA model...")
     solution = generate_solution_with_ai(problem_info, api_key)
     if not solution:
         print("Failed to generate solution")
@@ -508,7 +487,6 @@ def generate_and_save_solution(problem_info, api_key):
 
     print("   Solution generated successfully!")
 
-    # Save the solution
     print("\n3. Saving solution to file...")
     saved_path = save_solution(problem_info["problem_id"], solution)
     if not saved_path:
