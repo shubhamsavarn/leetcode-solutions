@@ -1,24 +1,42 @@
 # [Problem 2914: Minimum Number of Changes to Make Binary String Beautiful](https://leetcode.com/problems/minimum-number-of-changes-to-make-binary-string-beautiful/description/?envType=daily-question)
 
 ## Initial thoughts (stream-of-consciousness)
-The string is beautiful if it can be partitioned into even-length substrings each containing only 0s or only 1s. Even-length blocks of identical characters means each block length is a multiple of 2. That suggests blocks must align with pairs of indices (0,1), (2,3), ... because every block starts at index 0 and has even length, so every block boundary lies between an odd and the next even index. So it seems we can treat the string as n/2 independent pairs; each pair must be either "00" or "11" in any beautiful string. For a mismatched pair "01" or "10" we must flip at least one character in that pair. So minimal changes should be the number of pairs that are not already both equal. Initially I thought maybe we need some DP or to consider merging across pairs, but recognizing boundaries align with pairs simplifies it.
+
+The string needs to be split into even-length blocks where each block is all `0`s or all `1`s. Since the total length is even, a natural way to think about this is to group the string into fixed pairs: `(s[0], s[1])`, `(s[2], s[3])`, etc.
+
+For any beautiful partition, consider one of these pairs. If a block covers both characters of a pair, that block must be uniform (all `0`s or all `1`s), so the two characters in the pair must end up equal. That means:
+- If `s[i] == s[i+1]`, the pair is already fine — 0 changes needed.
+- If `s[i] != s[i+1]`, at least one of them must change — exactly 1 change is enough to make them match.
+
+Because the pairs are disjoint, decisions for one pair don't affect another. So the answer should just be the count of mismatched pairs among `(0,1), (2,3), ...`.
 
 ## Refining the problem, round 2 thoughts
-Confirming the pair-alignment argument: the first block starts at index 0 and has even length, so it ends at an odd index; next block starts at an even index, and so on. Thus block boundaries always fall between indices 2k+1 and 2k+2, and blocks are integral numbers of these pairs. Therefore making the whole string beautiful reduces to ensuring every pair (2i,2i+1) has identical bits. Each pair's cost is independent: min flips to make it "00" (flip the ones) or "11" (flip the zeros) — which is 0 if both equal, otherwise 1. Edge cases: s length guaranteed even and >=2. So just count mismatched pairs. Time complexity O(n), space O(1).
+
+**Lower bound:** Each mismatched pair `(s[i], s[i+1])` contains two different characters. Any valid beautiful substring containing both must be all `0`s or all `1`s, so at least one character in that pair must be changed. Thus we need at least 1 change per mismatched pair.
+
+**Upper bound:** If we change exactly one character in every mismatched pair to match the other, every pair becomes `"00"` or `"11"`. We can then partition the string into these length-2 substrings, each of which is even-length and uniform. So the number of mismatched pairs is also sufficient.
+
+**Edge cases:**
+- Length 2: works directly.
+- Already beautiful (e.g., `"0000"`): 0 mismatched pairs → 0 changes.
+- Fully alternating (e.g., `"0101"`): every pair mismatches → need 1 change per pair.
+
+**Complexity:** We scan the string once in steps of 2, so O(n) time and O(1) extra space.
 
 ## Attempted solution(s)
+
 ```python
 class Solution:
-    def minimumChanges(self, s: str) -> int:
-        # Count pairs (2i, 2i+1) that are mismatched.
-        n = len(s)
+    def minChanges(self, s: str) -> int:
         changes = 0
-        for i in range(0, n, 2):
-            if s[i] != s[i+1]:
+        # Process the string in non-overlapping pairs: (0,1), (2,3), ...
+        for i in range(0, len(s), 2):
+            if s[i] != s[i + 1]:
                 changes += 1
         return changes
 ```
-- Notes:
-  - Approach: Treat the string as n/2 independent pairs of adjacent characters. Each pair must become "00" or "11". If a pair is already "00" or "11" cost is 0; if it's "01" or "10" cost is 1. Summing over all pairs gives the minimum changes.
-  - Time complexity: O(n) where n = len(s).
-  - Space complexity: O(1) additional space.
+
+- **Approach:** Greedy pairing. Iterate over the string two characters at a time. Whenever the two characters in a pair differ, we need exactly one change to make them equal; otherwise no change is needed. Summing these gives the minimum total changes.
+- **Time Complexity:** O(n), where n is the length of `s`.
+- **Space Complexity:** O(1) — only a counter is used.
+- **Correctness:** Each mismatched pair requires at least one change, and changing one character per mismatched pair is sufficient to make every pair uniform, allowing a valid partition into length-2 substrings.
