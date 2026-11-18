@@ -2,14 +2,14 @@ name: Auto-solve Daily LeetCode Problem
 
 on:
   schedule:
-    - cron: '1 0 * * *' # Runs daily at 00:01 UTC (1 minute after daily problems are released)
+    - cron: '1 0 * * *' # Runs daily at 00:01 UTC
   workflow_dispatch: # Allows for manual triggering
 
 jobs:
   auto-solve:
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'ContextLab'  # only run if on the ContextLab (source) repository!
-    
+    if: github.repository_owner == 'shubhamsavarn'
+
     permissions:
       contents: write  # Required to push commits back to the repository
 
@@ -29,13 +29,13 @@ jobs:
 
       - name: Run auto-solver
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           python auto_solver.py
 
       - name: Commit and push changes
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "Auto-solve daily LeetCode problem using GPT-5-mini"
+          commit_message: "Auto-solve daily LeetCode problem"
           branch: main
           file_pattern: problems/*/gpt5-mini.md
